@@ -1,7 +1,10 @@
 package com.example.myapplication.repository
 
 import com.example.myapplication.model.*
+import com.example.myapplication.ui.components.formatPrice
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.Query
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +59,8 @@ object NestaRepository {
     private val _messages = MutableStateFlow<Map<String, List<Message>>>(emptyMap())
     val messages: StateFlow<Map<String, List<Message>>> = _messages.asStateFlow()
 
+    private var activeMessagesListener: ListenerRegistration? = null
+
     // Reports Queue (Admin moderation)
     private val _reports = MutableStateFlow<List<Report>>(emptyList())
     val reports: StateFlow<List<Report>> = _reports.asStateFlow()
@@ -87,6 +92,8 @@ object NestaRepository {
 
     // Clear user-specific state on logout or account switch
     fun clearUserData() {
+        activeMessagesListener?.remove()
+        activeMessagesListener = null
         _favoritePropertyIds.value = emptySet()
         _comparePropertyIds.value = emptySet()
         _recentlyViewedIds.value = emptyList()
@@ -212,7 +219,6 @@ object NestaRepository {
             }
         }
 
-        // Check text query only if specific filters (like bedrooms/neighborhood) were NOT parsed
         val hasParsedFilters = filter.propertyType != null || filter.neighborhood != null || filter.bedrooms != null || filter.maxPrice != null
         if (filter.query.isNotBlank() && !hasParsedFilters) {
             val q = filter.query.lowercase()
@@ -281,17 +287,13 @@ object NestaRepository {
         var score = 0
         if (prop.title.length > 10) score += 15
         if (prop.description.length > 50) score += 20
-        if (prop.images.size >= 1) score += 20
+        if (prop.images.isNotEmpty()) score += 20
         if (prop.sizeSqm > 0) score += 15
         if (prop.amenities.isNotEmpty()) score += 15
         if (prop.location.approximateAddress.isNotBlank()) score += 15
         return minOf(100, score)
     }
 
-    // Submit Real Agent Property:
-    // Derives ownership & identity directly from AuthRepository.currentUser
-    // Forces status = ListingStatus.PENDING, verificationStatus = VerificationStatus.PENDING, isFeatured = false
-    // Resets analytics counters
     fun addProperty(draftProp: Property) {
         val user = currentUser.value ?: throw SecurityException("Authentication required to submit property listings.")
 
@@ -319,8 +321,8 @@ object NestaRepository {
             isOwnerVerified = user.isVerified,
             status = ListingStatus.PENDING,
             verificationStatus = VerificationStatus.PENDING,
-            isFeatured = false, // Client cannot grant featured status
-            viewsCount = 0, // Reset analytics
+            isFeatured = false,
+            viewsCount = 0,
             uniqueViews = 0,
             savesCount = 0,
             sharesCount = 0,
@@ -332,11 +334,10 @@ object NestaRepository {
         list.add(0, sanitizedProperty)
         _properties.value = list
 
-        // Route notification to authorized moderators
         val notifs = _notifications.value.toMutableList()
         notifs.add(0, NotificationItem(
             id = "n_${System.currentTimeMillis()}",
-            userId = "admin_moderators", // Backend moderator routing
+            userId = "admin_moderators",
             title = "New Agent Listing Submitted",
             message = "Agent ${user.name} submitted '${sanitizedProperty.title}' for review.",
             type = "MODERATION",
@@ -345,7 +346,6 @@ object NestaRepository {
         _notifications.value = notifs
     }
 
-    // Agent Ownership Enforced: Agents can ONLY update status for their OWN properties
     fun updatePropertyStatus(propertyId: String, status: ListingStatus) {
         val user = currentUser.value ?: throw SecurityException("Authentication required.")
         _properties.value = _properties.value.map { prop ->
@@ -367,7 +367,7 @@ object NestaRepository {
             val firestore = FirebaseFirestore.getInstance()
             val querySnapshot = firestore.collection("users")
                 .whereEqualTo("role", UserRole.AGENT.name)
-                .whereEqualTo("isAgentApproved", false)
+                .whereEqualTo("approvalStatus", AgentApprovalStatus.PENDING.name)
                 .get().await()
 
             val list = querySnapshot.documents.mapNotNull { doc ->
@@ -377,7 +377,6 @@ object NestaRepository {
                 val phone = doc.getString("phone") ?: ""
                 val agencyName = doc.getString("agencyName") ?: ""
                 val isEmailVerified = doc.getBoolean("isEmailVerified") ?: false
-                val isAgentApproved = doc.getBoolean("isAgentApproved") ?: false
                 val memberSince = doc.getString("memberSince") ?: ""
 
                 User(
@@ -387,7 +386,7 @@ object NestaRepository {
                     phone = phone,
                     role = UserRole.AGENT,
                     isEmailVerified = isEmailVerified,
-                    approvalStatus = if (isAgentApproved) AgentApprovalStatus.APPROVED else AgentApprovalStatus.PENDING,
+                    approvalStatus = AgentApprovalStatus.PENDING,
                     agencyName = agencyName,
                     memberSince = memberSince
                 )
@@ -403,9 +402,16 @@ object NestaRepository {
         if (user.role != UserRole.ADMIN) return@withContext Result.failure(SecurityException("Admin authorization required."))
 
         try {
+            val updateData = mapOf(
+                "approvalStatus" to AgentApprovalStatus.APPROVED.name,
+                "isAgentApproved" to true,
+                "reviewedBy" to user.id,
+                "reviewedAt" to getCurrentIsoTimestamp(),
+                "rejectionReason" to ""
+            )
             FirebaseFirestore.getInstance()
                 .collection("users").document(agentUserId)
-                .update("isAgentApproved", true).await()
+                .update(updateData).await()
 
             _pendingAgents.value = _pendingAgents.value.filter { it.id != agentUserId }
             Result.success(Unit)
@@ -420,9 +426,16 @@ object NestaRepository {
         if (user.role != UserRole.ADMIN) return@withContext Result.failure(SecurityException("Admin authorization required."))
 
         try {
+            val updateData = mapOf(
+                "approvalStatus" to AgentApprovalStatus.REJECTED.name,
+                "isAgentApproved" to false,
+                "reviewedBy" to user.id,
+                "reviewedAt" to getCurrentIsoTimestamp(),
+                "rejectionReason" to reason
+            )
             FirebaseFirestore.getInstance()
                 .collection("users").document(agentUserId)
-                .update(mapOf("isAgentApproved" to false, "rejectionReason" to reason)).await()
+                .update(updateData).await()
 
             _pendingAgents.value = _pendingAgents.value.filter { it.id != agentUserId }
             Result.success(Unit)
@@ -472,24 +485,159 @@ object NestaRepository {
     }
 
     // --- MESSAGING & VIEWING REQUESTS ---
-    fun sendViewingRequest(request: ViewingRequest) {
-        val user = currentUser.value ?: throw SecurityException("Authentication required.")
-        val currentTime = getCurrentIsoTimestamp()
+    suspend fun getOrCreateConversation(property: Property): Result<Conversation> = withContext(Dispatchers.IO) {
+        val seeker = currentUser.value ?: return@withContext Result.failure(SecurityException("Authentication required to message agents."))
 
-        val authenticatedRequest = request.copy(
-            id = "v_${System.currentTimeMillis()}",
-            requesterId = user.id,
-            requesterName = user.name,
-            requesterPhone = user.phone,
-            createdAt = currentTime
-        )
+        if (seeker.id == property.ownerId) {
+            return@withContext Result.failure(Exception("You cannot start a conversation on your own property listing."))
+        }
 
-        val list = _viewingRequests.value.toMutableList()
-        list.add(0, authenticatedRequest)
-        _viewingRequests.value = list
+        val conversationId = "conv_${seeker.id}_${property.ownerId}_${property.id}"
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val docRef = firestore.collection("conversations").document(conversationId)
+            val docSnapshot = docRef.get().await()
 
-        _properties.value = _properties.value.map {
-            if (it.id == request.propertyId) it.copy(inquiriesCount = it.inquiriesCount + 1) else it
+            val conv = if (docSnapshot.exists()) {
+                Conversation(
+                    id = docSnapshot.id,
+                    propertyId = docSnapshot.getString("propertyId") ?: property.id,
+                    propertyTitle = docSnapshot.getString("propertyTitle") ?: property.title,
+                    propertyPrice = docSnapshot.getString("propertyPrice") ?: "KSh ${formatPrice(property.price)}",
+                    propertyImage = docSnapshot.getString("propertyImage") ?: property.coverImage,
+                    seekerId = docSnapshot.getString("seekerId") ?: seeker.id,
+                    agentId = docSnapshot.getString("agentId") ?: property.ownerId,
+                    agentName = docSnapshot.getString("agentName") ?: property.ownerName,
+                    lastMessage = docSnapshot.getString("lastMessage") ?: "",
+                    lastTimestamp = docSnapshot.getString("lastTimestamp") ?: "",
+                    participants = (docSnapshot.get("participants") as? List<*>)?.mapNotNull { it.toString() } ?: listOf(seeker.id, property.ownerId)
+                )
+            } else {
+                val timestamp = getCurrentIsoTimestamp()
+                val newConv = Conversation(
+                    id = conversationId,
+                    propertyId = property.id,
+                    propertyTitle = property.title,
+                    propertyPrice = "KSh ${formatPrice(property.price)}",
+                    propertyImage = property.coverImage,
+                    seekerId = seeker.id,
+                    agentId = property.ownerId,
+                    agentName = property.ownerName,
+                    lastMessage = "Inquiry regarding ${property.title}",
+                    lastTimestamp = SimpleDateFormat("HH:mm", Locale.US).format(Date()),
+                    participants = listOf(seeker.id, property.ownerId)
+                )
+
+                val convMap = mapOf(
+                    "id" to conversationId,
+                    "propertyId" to property.id,
+                    "propertyTitle" to property.title,
+                    "propertyPrice" to "KSh ${formatPrice(property.price)}",
+                    "propertyImage" to property.coverImage,
+                    "seekerId" to seeker.id,
+                    "agentId" to property.ownerId,
+                    "agentName" to property.ownerName,
+                    "lastMessage" to newConv.lastMessage,
+                    "lastTimestamp" to newConv.lastTimestamp,
+                    "participants" to listOf(seeker.id, property.ownerId),
+                    "createdAt" to timestamp
+                )
+                docRef.set(convMap).await()
+                newConv
+            }
+
+            val currentList = _conversations.value.toMutableList()
+            if (currentList.none { it.id == conversationId }) {
+                currentList.add(0, conv)
+                _conversations.value = currentList
+            }
+
+            Result.success(conv)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Result.failure(Exception(e.message ?: "Failed to open conversation.", e))
+        }
+    }
+
+    fun observeMessages(conversationId: String) {
+        activeMessagesListener?.remove()
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val query = firestore.collection("conversations")
+                .document(conversationId)
+                .collection("messages")
+                .orderBy("createdAt", Query.Direction.ASCENDING)
+
+            activeMessagesListener = query.addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null) return@addSnapshotListener
+
+                val msgs = snapshot.documents.mapNotNull { doc ->
+                    val id = doc.id
+                    val senderId = doc.getString("senderId") ?: ""
+                    val senderName = doc.getString("senderName") ?: ""
+                    val text = doc.getString("text") ?: ""
+                    val timestamp = doc.getString("timestamp") ?: ""
+
+                    Message(
+                        id = id,
+                        conversationId = conversationId,
+                        senderId = senderId,
+                        senderName = senderName,
+                        text = text,
+                        timestamp = timestamp
+                    )
+                }
+
+                val currentMap = _messages.value.toMutableMap()
+                currentMap[conversationId] = msgs
+                _messages.value = currentMap
+            }
+        } catch (_: Exception) { }
+    }
+
+    suspend fun sendMessageAsync(conversationId: String, text: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val cleanText = text.trim()
+        if (cleanText.isBlank()) {
+            return@withContext Result.failure(Exception("Message text cannot be empty."))
+        }
+
+        val user = currentUser.value ?: return@withContext Result.failure(SecurityException("Authentication required to send messages."))
+        val currentTimeStr = SimpleDateFormat("HH:mm", Locale.US).format(Date())
+        val isoTime = getCurrentIsoTimestamp()
+
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val msgId = "msg_${System.currentTimeMillis()}"
+
+            val msgMap = mapOf(
+                "id" to msgId,
+                "conversationId" to conversationId,
+                "senderId" to user.id,
+                "senderName" to user.name,
+                "text" to cleanText,
+                "timestamp" to currentTimeStr,
+                "createdAt" to isoTime
+            )
+
+            // Write message to Firestore subcollection
+            firestore.collection("conversations")
+                .document(conversationId)
+                .collection("messages")
+                .document(msgId)
+                .set(msgMap).await()
+
+            // Update parent conversation summary
+            firestore.collection("conversations")
+                .document(conversationId)
+                .update(mapOf(
+                    "lastMessage" to cleanText,
+                    "lastTimestamp" to currentTimeStr
+                )).await()
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Result.failure(Exception(e.message ?: "Failed to send message.", e))
         }
     }
 
@@ -513,6 +661,27 @@ object NestaRepository {
 
         _conversations.value = _conversations.value.map {
             if (it.id == conversationId) it.copy(lastMessage = text, lastTimestamp = currentTime) else it
+        }
+    }
+
+    fun sendViewingRequest(request: ViewingRequest) {
+        val user = currentUser.value ?: throw SecurityException("Authentication required.")
+        val currentTime = getCurrentIsoTimestamp()
+
+        val authenticatedRequest = request.copy(
+            id = "v_${System.currentTimeMillis()}",
+            requesterId = user.id,
+            requesterName = user.name,
+            requesterPhone = user.phone,
+            createdAt = currentTime
+        )
+
+        val list = _viewingRequests.value.toMutableList()
+        list.add(0, authenticatedRequest)
+        _viewingRequests.value = list
+
+        _properties.value = _properties.value.map {
+            if (it.id == request.propertyId) it.copy(inquiriesCount = it.inquiriesCount + 1) else it
         }
     }
 

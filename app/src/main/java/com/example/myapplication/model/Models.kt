@@ -214,13 +214,15 @@ data class Conversation(
     val propertyId: String,
     val propertyTitle: String,
     val propertyPrice: String,
-    val propertyImage: String,
-    val seekerId: String,
-    val agentId: String,
-    val agentName: String,
-    val lastMessage: String,
-    val lastTimestamp: String,
-    val unreadCount: Int = 0
+    val propertyImage: String = "",
+    val seekerId: String = "",
+    val seekerName: String = "",
+    val agentId: String = "",
+    val agentName: String = "",
+    val lastMessage: String = "",
+    val lastTimestamp: String = "",
+    val unreadCount: Int = 0,
+    val participants: List<String> = emptyList()
 )
 
 data class Report(

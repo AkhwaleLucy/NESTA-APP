@@ -24,19 +24,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.myapplication.model.Conversation
 import com.example.myapplication.model.Message
+import com.example.myapplication.repository.NestaRepository
 import com.example.myapplication.ui.theme.*
+import kotlinx.coroutines.launch
 
 @Composable
 fun MessagesScreen(
     conversations: List<Conversation>,
     messagesMap: Map<String, List<Message>>,
     currentUserId: String,
-    onSendMessage: (String, String) -> Unit
+    initialConversationId: String? = null,
+    onSendMessageAsync: suspend (String, String) -> Result<Unit> = { _, _ -> Result.success(Unit) },
+    onBackToList: () -> Unit = {}
 ) {
-    var selectedConversationId by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    var selectedConversationId by remember { mutableStateOf(initialConversationId ?: conversations.firstOrNull()?.id) }
     val activeConversation = conversations.find { it.id == selectedConversationId }
 
+    var isSending by remember { mutableStateOf(false) }
+    var sendErrorMessage by remember { mutableStateOf<String?>(null) }
+
     if (activeConversation != null) {
+        LaunchedEffect(activeConversation.id) {
+            NestaRepository.observeMessages(activeConversation.id)
+        }
+
         // --- CHAT THREAD VIEW ---
         val conversationMessages = messagesMap[activeConversation.id] ?: emptyList()
         var messageInput by remember { mutableStateOf("") }
@@ -46,7 +58,7 @@ fun MessagesScreen(
                 .fillMaxSize()
                 .background(WarmOffWhite)
         ) {
-            // Chat Header with Attached Property Banner
+            // Chat Header
             Surface(
                 color = CardBackground,
                 shadowElevation = 2.dp,
@@ -59,7 +71,10 @@ fun MessagesScreen(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = { selectedConversationId = null }) {
+                        IconButton(onClick = {
+                            selectedConversationId = null
+                            onBackToList()
+                        }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
                         Spacer(modifier = Modifier.width(4.dp))
@@ -70,14 +85,23 @@ fun MessagesScreen(
                                 .background(DeepNavy, CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(activeConversation.agentName.take(1), color = WarmOffWhite, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (activeConversation.seekerId == currentUserId) activeConversation.agentName.take(1) else activeConversation.seekerName.take(1),
+                                color = WarmOffWhite,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
 
                         Spacer(modifier = Modifier.width(10.dp))
 
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(activeConversation.agentName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = DarkCharcoal)
-                            Text("Replies instantly · Nairobi Agent", fontSize = 11.sp, color = VerifiedGreen)
+                            Text(
+                                text = if (activeConversation.seekerId == currentUserId) activeConversation.agentName else activeConversation.seekerName,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = DarkCharcoal
+                            )
+                            Text("Direct In-App Conversation", fontSize = 11.sp, color = MutedText)
                         }
                     }
 
@@ -105,6 +129,21 @@ fun MessagesScreen(
                 }
             }
 
+            if (sendErrorMessage != null) {
+                Surface(
+                    color = RejectedRedBg,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = sendErrorMessage!!,
+                        color = RejectedRed,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+            }
+
             // Message Bubble List
             LazyColumn(
                 modifier = Modifier
@@ -112,36 +151,49 @@ fun MessagesScreen(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(conversationMessages) { msg ->
-                    val isMine = msg.senderId == currentUserId
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(
-                                topStart = 14.dp,
-                                topEnd = 14.dp,
-                                bottomStart = if (isMine) 14.dp else 2.dp,
-                                bottomEnd = if (isMine) 2.dp else 14.dp
-                            ),
-                            color = if (isMine) DeepNavy else CardBackground,
-                            border = if (isMine) null else androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
-                            shadowElevation = 1.dp
+                if (conversationMessages.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 40.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = msg.text,
-                                    fontSize = 14.sp,
-                                    color = if (isMine) WarmOffWhite else DarkCharcoal
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = msg.timestamp,
-                                    fontSize = 10.sp,
-                                    color = if (isMine) WarmIvory.copy(alpha = 0.7f) else MutedText,
-                                    modifier = Modifier.align(Alignment.End)
-                                )
+                            Text("No messages yet. Send a message to start the conversation!", fontSize = 12.sp, color = MutedText)
+                        }
+                    }
+                } else {
+                    items(conversationMessages) { msg ->
+                        val isMine = msg.senderId == currentUserId
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(
+                                    topStart = 14.dp,
+                                    topEnd = 14.dp,
+                                    bottomStart = if (isMine) 14.dp else 2.dp,
+                                    bottomEnd = if (isMine) 2.dp else 14.dp
+                                ),
+                                color = if (isMine) DeepNavy else CardBackground,
+                                border = if (isMine) null else BorderStroke(1.dp, CardBorder),
+                                shadowElevation = 1.dp
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = msg.text,
+                                        fontSize = 14.sp,
+                                        color = if (isMine) WarmOffWhite else DarkCharcoal
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = msg.timestamp,
+                                        fontSize = 10.sp,
+                                        color = if (isMine) WarmIvory.copy(alpha = 0.7f) else MutedText,
+                                        modifier = Modifier.align(Alignment.End)
+                                    )
+                                }
                             }
                         }
                     }
@@ -152,7 +204,7 @@ fun MessagesScreen(
             Surface(
                 color = CardBackground,
                 shadowElevation = 6.dp,
-                border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder)
+                border = BorderStroke(1.dp, CardBorder)
             ) {
                 Row(
                     modifier = Modifier
@@ -163,7 +215,8 @@ fun MessagesScreen(
                     OutlinedTextField(
                         value = messageInput,
                         onValueChange = { messageInput = it },
-                        placeholder = { Text("Write a message to agent...", fontSize = 13.sp) },
+                        placeholder = { Text("Write a message...", fontSize = 13.sp) },
+                        enabled = !isSending,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(20.dp),
                         maxLines = 3
@@ -171,16 +224,35 @@ fun MessagesScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(
                         onClick = {
-                            if (messageInput.isNotBlank()) {
-                                onSendMessage(activeConversation.id, messageInput)
-                                messageInput = ""
+                            val textToSend = messageInput.trim()
+                            if (textToSend.isNotBlank()) {
+                                isSending = true
+                                sendErrorMessage = null
+                                coroutineScope.launch {
+                                    val res = onSendMessageAsync(activeConversation.id, textToSend)
+                                    isSending = false
+                                    res.fold(
+                                        onSuccess = {
+                                            messageInput = "" // Clear input only on success
+                                        },
+                                        onFailure = { err ->
+                                            sendErrorMessage = err.message ?: "Failed to send message. Please retry."
+                                            // Keeps typed text in messageInput for retry!
+                                        }
+                                    )
+                                }
                             }
                         },
+                        enabled = !isSending && messageInput.isNotBlank(),
                         modifier = Modifier
                             .background(DeepNavy, CircleShape)
                             .size(44.dp)
                     ) {
-                        Icon(Icons.Default.Send, contentDescription = "Send", tint = WarmOffWhite, modifier = Modifier.size(20.dp))
+                        if (isSending) {
+                            CircularProgressIndicator(color = WarmOffWhite, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Send, contentDescription = "Send", tint = WarmOffWhite, modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
             }
@@ -237,7 +309,12 @@ fun MessagesScreen(
                                         .background(DeepNavy, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(conv.agentName.take(1), color = WarmOffWhite, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                    Text(
+                                        text = if (conv.seekerId == currentUserId) conv.agentName.take(1) else conv.seekerName.take(1),
+                                        color = WarmOffWhite,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 18.sp
+                                    )
                                 }
 
                                 Spacer(modifier = Modifier.width(12.dp))
@@ -247,7 +324,12 @@ fun MessagesScreen(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Text(conv.agentName, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = DarkCharcoal)
+                                        Text(
+                                            text = if (conv.seekerId == currentUserId) conv.agentName else conv.seekerName,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = DarkCharcoal
+                                        )
                                         Text(conv.lastTimestamp, fontSize = 11.sp, color = MutedText)
                                     }
 

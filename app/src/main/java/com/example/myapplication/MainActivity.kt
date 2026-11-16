@@ -88,6 +88,7 @@ fun NestaApp(
 
             var showNotificationsDialog by remember { mutableStateOf(false) }
             var activeSearchFilter by remember { mutableStateOf(SearchFilter()) }
+            var activeConversationId by remember { mutableStateOf<String?>(null) }
 
             val navBackStackEntry by navController.currentBackStackEntryAsState()
             val currentRoute = navBackStackEntry?.destination?.route ?: "home"
@@ -222,8 +223,19 @@ fun NestaApp(
                                     onBackClick = { navController.popBackStack() },
                                     onRequestViewingSubmit = { req -> NestaRepository.sendViewingRequest(req) },
                                     onReportSubmit = { rep -> NestaRepository.submitReport(rep) },
-                                    onStartChat = { _ ->
-                                        navController.navigate("messages")
+                                    onStartChat = { prop ->
+                                        coroutineScope.launch {
+                                            val res = NestaRepository.getOrCreateConversation(prop)
+                                            res.fold(
+                                                onSuccess = { conv ->
+                                                    activeConversationId = conv.id
+                                                    navController.navigate("messages")
+                                                },
+                                                onFailure = { err ->
+                                                    // Display failure error toast/alert if self-messaging or network error
+                                                }
+                                            )
+                                        }
                                     }
                                 )
                             }
@@ -279,7 +291,9 @@ fun NestaApp(
                                 conversations = conversations,
                                 messagesMap = messagesMap,
                                 currentUserId = currentUser.id,
-                                onSendMessage = { convId, text -> NestaRepository.sendMessage(convId, text) }
+                                initialConversationId = activeConversationId,
+                                onSendMessageAsync = { convId, text -> NestaRepository.sendMessageAsync(convId, text) },
+                                onBackToList = { activeConversationId = null }
                             )
                         }
 
