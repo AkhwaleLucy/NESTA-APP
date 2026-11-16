@@ -142,14 +142,22 @@ object NestaRepository {
         } catch (_: Exception) { }
     }
 
-    suspend fun sendNotification(recipientId: String, title: String, message: String, type: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun sendNotification(
+        recipientId: String,
+        title: String,
+        message: String,
+        type: String,
+        conversationId: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val user = currentUser.value ?: return@withContext Result.failure(SecurityException("Authentication required."))
         try {
             val notifId = "notif_${System.currentTimeMillis()}"
             val currentTimeStr = SimpleDateFormat("HH:mm", Locale.US).format(Date())
             val isoTime = getCurrentIsoTimestamp()
-            val notifMap = mapOf(
+            val notifMap = mutableMapOf<String, Any>(
                 "id" to notifId,
                 "userId" to recipientId,
+                "senderId" to user.id,
                 "title" to title,
                 "message" to message,
                 "type" to type,
@@ -157,6 +165,10 @@ object NestaRepository {
                 "timestamp" to currentTimeStr,
                 "createdAt" to isoTime
             )
+            if (!conversationId.isNull_or_blank()) {
+                notifMap["conversationId"] = conversationId!!
+            }
+
             FirebaseFirestore.getInstance().collection("users")
                 .document(recipientId)
                 .collection("notifications")

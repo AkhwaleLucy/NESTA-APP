@@ -55,8 +55,33 @@ service cloud.firestore {
 
       // Recipient-only User Notifications Subcollection
       match /notifications/{notificationId} {
-        allow read, update, delete: if isOwner(userId) || isAdmin();
-        allow create: if isAuthenticated();
+        // Reads and deletes strictly restricted to the intended recipient
+        allow read, delete: if isOwner(userId);
+
+        // Recipient can ONLY update the isRead field; content and metadata are immutable
+        allow update: if isOwner(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) &&
+          request.resource.data.isRead is bool;
+
+        // Creation authorized only for admins or verified relationship events
+        allow create: if isAuthenticated() &&
+          request.resource.data.userId == userId &&
+          request.resource.data.isRead == false &&
+          (
+            isAdmin() ||
+            (
+              // Message Notification: sender must be participant in referenced conversation
+              request.resource.data.type == 'MESSAGE' &&
+              'conversationId' in request.resource.data &&
+              request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants
+            ) ||
+            (
+              // Viewing Notification: sender must be requester or property owner
+              request.resource.data.type == 'VIEWING' &&
+              'senderId' in request.resource.data &&
+              request.auth.uid == request.resource.data.senderId
+            )
+          );
       }
     }
 
