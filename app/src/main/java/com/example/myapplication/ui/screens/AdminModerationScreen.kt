@@ -39,18 +39,39 @@ fun AdminModerationScreen(
     onPropertyClick: (Property) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    var selectedTab by remember { mutableStateOf(0) } // 0 = Property Queue, 1 = Agent Queue, 2 = Reports
+    var selectedTab by remember { mutableStateOf(0) } // 0 = Property Queue, 1 = Agent Management, 2 = Reports
+    var selectedAgentStatusTab by remember { mutableStateOf(AgentApprovalStatus.PENDING) }
+
+    var agentListState by remember { mutableStateOf<List<User>>(emptyList()) }
+    var isLoadingAgents by remember { mutableStateOf(false) }
+
     var showRejectDialogForId by remember { mutableStateOf<String?>(null) }
     var showAgentRejectDialogForId by remember { mutableStateOf<String?>(null) }
+    var showAgentSuspendDialogForId by remember { mutableStateOf<String?>(null) }
     var rejectionReasonText by remember { mutableStateOf("") }
     var agentRejectionReasonText by remember { mutableStateOf("") }
+    var agentSuspendReasonText by remember { mutableStateOf("") }
     var adminFeedbackMessage by remember { mutableStateOf<String?>(null) }
     var isActionInProgress by remember { mutableStateOf(false) }
 
     val pendingProperties = allProperties.filter { it.verificationStatus == VerificationStatus.PENDING || it.status == ListingStatus.PENDING }
 
-    LaunchedEffect(Unit) {
-        NestaRepository.fetchPendingAgents()
+    fun refreshAgentList() {
+        isLoadingAgents = true
+        coroutineScope.launch {
+            val res = NestaRepository.fetchAgentsByStatus(selectedAgentStatusTab)
+            isLoadingAgents = false
+            res.fold(
+                onSuccess = { agentListState = it },
+                onFailure = { err -> adminFeedbackMessage = err.message ?: "Failed to load agents." }
+            )
+        }
+    }
+
+    LaunchedEffect(selectedAgentStatusTab, selectedTab) {
+        if (selectedTab == 1) {
+            refreshAgentList()
+        }
     }
 
     Column(
@@ -61,7 +82,7 @@ fun AdminModerationScreen(
     ) {
         // Admin Header
         Text("Admin Moderation Console", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = DeepNavy)
-        Text("Verify listings, approve agent applications, and maintain platform trust", fontSize = 12.sp, color = MutedText)
+        Text("Verify listings, manage agent directories, and maintain platform trust", fontSize = 12.sp, color = MutedText)
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -72,7 +93,7 @@ fun AdminModerationScreen(
         ) {
             AdminStatCard("Listings", allProperties.size.toString(), Modifier.weight(1f))
             AdminStatCard("Pending", pendingProperties.size.toString(), Modifier.weight(1f))
-            AdminStatCard("Agents", pendingAgents.size.toString(), Modifier.weight(1f))
+            AdminStatCard("Agents", agentListState.size.toString(), Modifier.weight(1f))
             AdminStatCard("Reports", reports.size.toString(), Modifier.weight(1f))
         }
 
@@ -95,7 +116,7 @@ fun AdminModerationScreen(
             }
         }
 
-        // Tabs
+        // Main Console Tabs
         TabRow(
             selectedTabIndex = selectedTab,
             containerColor = WarmOffWhite,
@@ -105,7 +126,7 @@ fun AdminModerationScreen(
                 Text("Listings (${pendingProperties.size})", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
             Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
-                Text("Agent Approvals (${pendingAgents.size})", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("Agent Directory", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
             Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
                 Text("Reports (${reports.size})", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -189,97 +210,163 @@ fun AdminModerationScreen(
             }
 
             1 -> {
-                // PENDING AGENTS APPROVAL QUEUE
-                if (pendingAgents.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize().padding(top = 40.dp), contentAlignment = Alignment.TopCenter) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Check, contentDescription = null, tint = VerifiedGreen, modifier = Modifier.size(48.dp))
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("No pending agent applications.", fontWeight = FontWeight.Bold, color = DarkCharcoal)
+                // AGENT DIRECTORY WITH 4 STATUS TABS
+                Column {
+                    ScrollableTabRow(
+                        selectedTabIndex = selectedAgentStatusTab.ordinal,
+                        containerColor = WarmOffWhite,
+                        contentColor = DeepNavy,
+                        edgePadding = 0.dp
+                    ) {
+                        AgentApprovalStatus.entries.forEach { status ->
+                            Tab(
+                                selected = selectedAgentStatusTab == status,
+                                onClick = { selectedAgentStatusTab = status }
+                            ) {
+                                Text(
+                                    text = status.label,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 12.dp)
+                                )
+                            }
                         }
                     }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 32.dp)
-                    ) {
-                        items(pendingAgents) { agent ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = CardBackground),
-                                border = CardDefaults.outlinedCardBorder().copy(brush = SolidColor(CardBorder))
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Person, contentDescription = null, tint = DeepNavy, modifier = Modifier.size(20.dp))
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(agent.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DarkCharcoal)
-                                        }
 
-                                        Surface(
-                                            color = if (agent.isEmailVerified) VerifiedGreenBg else PendingOrangeBg,
-                                            shape = RoundedCornerShape(6.dp)
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (isLoadingAgents) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = DeepNavy, modifier = Modifier.size(24.dp))
+                        }
+                    } else if (agentListState.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize().padding(top = 40.dp), contentAlignment = Alignment.TopCenter) {
+                            Text("No agents found under '${selectedAgentStatusTab.label}'.", fontWeight = FontWeight.Bold, color = MutedText, fontSize = 13.sp)
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(bottom = 32.dp)
+                        ) {
+                            items(agentListState) { agent ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = CardDefaults.cardColors(containerColor = CardBackground),
+                                    border = CardDefaults.outlinedCardBorder().copy(brush = SolidColor(CardBorder))
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                text = if (agent.isEmailVerified) "Email Verified" else "Unverified Email",
-                                                color = if (agent.isEmailVerified) VerifiedGreen else PendingOrange,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.Person, contentDescription = null, tint = DeepNavy, modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(agent.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DarkCharcoal)
+                                            }
+
+                                            Surface(
+                                                color = if (agent.isEmailVerified) VerifiedGreenBg else PendingOrangeBg,
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (agent.isEmailVerified) "Email Verified" else "Unverified Email",
+                                                    color = if (agent.isEmailVerified) VerifiedGreen else PendingOrange,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
                                         }
-                                    }
 
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text("Agency: ${agent.agencyName.ifBlank { "Independent Agent" }}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MutedTerracotta)
-                                    Text("Email: ${agent.email} · Phone: ${agent.phone}", fontSize = 12.sp, color = MutedText)
-                                    Text("Registered: ${agent.memberSince}", fontSize = 11.sp, color = MutedText)
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text("Agency: ${agent.agencyName.ifBlank { "Independent Agent" }}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MutedTerracotta)
+                                        Text("Email: ${agent.email} · Phone: ${agent.phone}", fontSize = 12.sp, color = MutedText)
+                                        Text("Registered: ${agent.memberSince}", fontSize = 11.sp, color = MutedText)
 
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    HorizontalDivider(color = CardBorder)
-                                    Spacer(modifier = Modifier.height(8.dp))
+                                        if (agent.reviewedBy.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text("Reviewed By: ${agent.reviewedBy} on ${agent.reviewedAt}", fontSize = 10.sp, color = MutedText)
+                                        }
 
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Button(
-                                            onClick = {
-                                                isActionInProgress = true
-                                                coroutineScope.launch {
-                                                    val res = NestaRepository.approveAgent(agent.id)
-                                                    isActionInProgress = false
-                                                    res.fold(
-                                                        onSuccess = { adminFeedbackMessage = "Approved agent '${agent.name}'." },
-                                                        onFailure = { err -> adminFeedbackMessage = err.message ?: "Failed to approve agent." }
-                                                    )
+                                        if (agent.rejectionReason.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Surface(
+                                                color = RejectedRedBg,
+                                                shape = RoundedCornerShape(6.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    text = "Reason: ${agent.rejectionReason}",
+                                                    color = RejectedRed,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(6.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        HorizontalDivider(color = CardBorder)
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            if (selectedAgentStatusTab != AgentApprovalStatus.APPROVED) {
+                                                Button(
+                                                    onClick = {
+                                                        isActionInProgress = true
+                                                        coroutineScope.launch {
+                                                            val res = NestaRepository.updateAgentApprovalStatus(agent.id, AgentApprovalStatus.APPROVED)
+                                                            isActionInProgress = false
+                                                            res.fold(
+                                                                onSuccess = {
+                                                                    adminFeedbackMessage = "Approved agent '${agent.name}'."
+                                                                    refreshAgentList()
+                                                                },
+                                                                onFailure = { err -> adminFeedbackMessage = err.message ?: "Failed to approve agent." }
+                                                            )
+                                                        }
+                                                    },
+                                                    enabled = !isActionInProgress,
+                                                    colors = ButtonDefaults.buttonColors(containerColor = VerifiedGreen),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.weight(1f).height(36.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Approve Agent", fontSize = 11.sp, color = WarmOffWhite)
                                                 }
-                                            },
-                                            enabled = !isActionInProgress,
-                                            colors = ButtonDefaults.buttonColors(containerColor = VerifiedGreen),
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1f).height(36.dp)
-                                        ) {
-                                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Approve Agent", fontSize = 11.sp, color = WarmOffWhite)
-                                        }
+                                            }
 
-                                        OutlinedButton(
-                                            onClick = { showAgentRejectDialogForId = agent.id },
-                                            enabled = !isActionInProgress,
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1f).height(36.dp)
-                                        ) {
-                                            Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Reject Agent", fontSize = 11.sp, color = RejectedRed)
+                                            if (selectedAgentStatusTab == AgentApprovalStatus.PENDING) {
+                                                OutlinedButton(
+                                                    onClick = { showAgentRejectDialogForId = agent.id },
+                                                    enabled = !isActionInProgress,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.weight(1f).height(36.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Reject Agent", fontSize = 11.sp, color = RejectedRed)
+                                                }
+                                            }
+
+                                            if (selectedAgentStatusTab == AgentApprovalStatus.APPROVED) {
+                                                Button(
+                                                    onClick = { showAgentSuspendDialogForId = agent.id },
+                                                    enabled = !isActionInProgress,
+                                                    colors = ButtonDefaults.buttonColors(containerColor = RejectedRed),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.weight(1f).height(36.dp)
+                                                ) {
+                                                    Text("Suspend Agent", fontSize = 11.sp, color = WarmOffWhite)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -407,12 +494,15 @@ fun AdminModerationScreen(
                         onClick = {
                             isActionInProgress = true
                             coroutineScope.launch {
-                                val res = NestaRepository.rejectAgent(targetAgentId, agentRejectionReasonText.ifBlank { "Application rejected by administrator." })
+                                val res = NestaRepository.updateAgentApprovalStatus(targetAgentId, AgentApprovalStatus.REJECTED, agentRejectionReasonText.ifBlank { "Application rejected by administrator." })
                                 isActionInProgress = false
                                 showAgentRejectDialogForId = null
                                 agentRejectionReasonText = ""
                                 res.fold(
-                                    onSuccess = { adminFeedbackMessage = "Rejected agent application." },
+                                    onSuccess = {
+                                        adminFeedbackMessage = "Rejected agent application."
+                                        refreshAgentList()
+                                    },
                                     onFailure = { err -> adminFeedbackMessage = err.message ?: "Failed to reject agent." }
                                 )
                             }
@@ -424,6 +514,54 @@ fun AdminModerationScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showAgentRejectDialogForId = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        // Suspension Dialog for Agent Accounts
+        showAgentSuspendDialogForId?.let { targetAgentId ->
+            AlertDialog(
+                onDismissRequest = { showAgentSuspendDialogForId = null },
+                title = { Text("Suspend Agent Account") },
+                text = {
+                    Column {
+                        Text("Provide a reason for suspending this agent account:", fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = agentSuspendReasonText,
+                            onValueChange = { agentSuspendReasonText = it },
+                            placeholder = { Text("e.g. Fraudulent listing submission") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            isActionInProgress = true
+                            coroutineScope.launch {
+                                val res = NestaRepository.updateAgentApprovalStatus(targetAgentId, AgentApprovalStatus.SUSPENDED, agentSuspendReasonText.ifBlank { "Account suspended by administrator." })
+                                isActionInProgress = false
+                                showAgentSuspendDialogForId = null
+                                agentSuspendReasonText = ""
+                                res.fold(
+                                    onSuccess = {
+                                        adminFeedbackMessage = "Suspended agent account."
+                                        refreshAgentList()
+                                    },
+                                    onFailure = { err -> adminFeedbackMessage = err.message ?: "Failed to suspend agent." }
+                                )
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = RejectedRed)
+                    ) {
+                        Text("Confirm Suspension", color = WarmOffWhite)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAgentSuspendDialogForId = null }) {
                         Text("Cancel")
                     }
                 }

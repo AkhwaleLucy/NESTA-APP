@@ -1,27 +1,39 @@
 package com.example.myapplication.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.myapplication.core.BrandingConfig
 import com.example.myapplication.model.*
+import com.example.myapplication.repository.CloudinaryImageUploader
 import com.example.myapplication.repository.NestaRepository
 import com.example.myapplication.ui.theme.*
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,6 +44,9 @@ fun ListPropertyWizardScreen(
     onBackClick: () -> Unit,
     onSubmitProperty: (Property) -> Unit
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     if (currentAgent.role == UserRole.AGENT && !currentAgent.isAgentApproved) {
         Scaffold(
             topBar = {
@@ -104,8 +119,23 @@ fun ListPropertyWizardScreen(
     var selectedNeighborhood by remember { mutableStateOf("Kilimani") }
     var approximateAddress by remember { mutableStateOf("") }
     var selectedAmenities by remember { mutableStateOf(setOf<Amenity>()) }
-    val propertyImages = remember { mutableStateListOf("https://images.unsplash.com/photo-1522708323590-d24dbb6b0267") }
-    val propertyImagePublicIds = remember { mutableStateListOf<String>() }
+
+    // Selected Real Image URIs from Android Photo Picker
+    val selectedImageUris = remember { mutableStateListOf<Uri>() }
+    var coverImageIndex by remember { mutableStateOf(0) }
+
+    var isSubmitting by remember { mutableStateOf(false) }
+    var uploadStatusMessage by remember { mutableStateOf<String?>(null) }
+    var uploadErrorMessage by remember { mutableStateOf<String?>(null) }
+    var uploadProgress by remember { mutableStateOf(0f) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            selectedImageUris.addAll(uris)
+        }
+    }
 
     val actualTime = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date()) }
 
@@ -137,10 +167,10 @@ fun ListPropertyWizardScreen(
             lng = 36.7865
         ),
         amenities = selectedAmenities.toList(),
-        images = propertyImages.toList(),
-        imagePublicIds = propertyImagePublicIds.toList(),
-        coverImage = propertyImages.firstOrNull() ?: "",
-        status = ListingStatus.PENDING,
+        images = selectedImageUris.map { it.toString() },
+        imagePublicIds = emptyList(),
+        coverImage = selectedImageUris.getOrNull(coverImageIndex)?.toString() ?: "",
+        status = ListingStatus.DRAFT,
         verificationStatus = VerificationStatus.PENDING,
         createdAt = actualTime
     )
@@ -192,7 +222,6 @@ fun ListPropertyWizardScreen(
 
             when (currentStep) {
                 1 -> {
-                    // STEP 1: Listing Type & Category
                     Text("Step 1: Listing Type & Property Category", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = DeepNavy)
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -241,7 +270,6 @@ fun ListPropertyWizardScreen(
                 }
 
                 2 -> {
-                    // STEP 2: Basic Info
                     Text("Step 2: Property Title & Specs", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = DeepNavy)
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -307,7 +335,6 @@ fun ListPropertyWizardScreen(
                 }
 
                 3 -> {
-                    // STEP 3: Pricing & Location
                     Text("Step 3: Pricing & Location", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = DeepNavy)
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -370,7 +397,6 @@ fun ListPropertyWizardScreen(
                 }
 
                 4 -> {
-                    // STEP 4: Amenities
                     Text("Step 4: Amenities & Features", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = DeepNavy)
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -404,7 +430,6 @@ fun ListPropertyWizardScreen(
                 }
 
                 5 -> {
-                    // STEP 5: Photos & Preview Submit
                     Text("Step 5: Photos & Final Submission", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = DeepNavy)
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -413,20 +438,111 @@ fun ListPropertyWizardScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Property Photos (${propertyImages.size})", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("Property Photos (${selectedImageUris.size})", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         Button(
-                            onClick = { propertyImages.add("https://images.unsplash.com/photo-1560448204-e02f11c3d0e2") },
+                            onClick = { photoPickerLauncher.launch("image/*") },
+                            enabled = !isSubmitting,
                             colors = ButtonDefaults.buttonColors(containerColor = MutedTerracotta)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Add Photo", fontSize = 12.sp)
+                            Text("Select Photos from Phone", fontSize = 12.sp)
                         }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Quality meter card
+                    if (selectedImageUris.isEmpty()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = CardBackground),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder)
+                        ) {
+                            Box(modifier = Modifier.padding(24.dp), contentAlignment = Alignment.Center) {
+                                Text("No photos selected yet. Tap 'Select Photos from Phone' to choose images.", fontSize = 13.sp, color = MutedText)
+                            }
+                        }
+                    } else {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            itemsIndexed(selectedImageUris) { index, uri ->
+                                val isCover = index == coverImageIndex
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = androidx.compose.foundation.BorderStroke(2.dp, if (isCover) MutedTerracotta else CardBorder),
+                                    modifier = Modifier.size(110.dp, 130.dp)
+                                ) {
+                                    Box {
+                                        AsyncImage(
+                                            model = uri,
+                                            contentDescription = "Photo $index",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+
+                                        IconButton(
+                                            onClick = {
+                                                selectedImageUris.removeAt(index)
+                                                if (coverImageIndex >= selectedImageUris.size) {
+                                                    coverImageIndex = maxOf(0, selectedImageUris.size - 1)
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(4.dp)
+                                                .size(24.dp)
+                                                .background(DarkCharcoal.copy(alpha = 0.7f), CircleShape)
+                                        ) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remove", tint = WarmOffWhite, modifier = Modifier.size(14.dp))
+                                        }
+
+                                        IconButton(
+                                            onClick = { coverImageIndex = index },
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(4.dp)
+                                                .size(24.dp)
+                                                .background(if (isCover) MutedTerracotta else DarkCharcoal.copy(alpha = 0.7f), CircleShape)
+                                        ) {
+                                            Icon(Icons.Default.Star, contentDescription = "Set Cover", tint = WarmOffWhite, modifier = Modifier.size(14.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (uploadStatusMessage != null) {
+                        Surface(
+                            color = VerifiedGreenBg,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(uploadStatusMessage!!, color = VerifiedGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                LinearProgressIndicator(
+                                    progress = { uploadProgress },
+                                    color = VerifiedGreen,
+                                    trackColor = CardBorder,
+                                    modifier = Modifier.fillMaxWidth().height(6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (uploadErrorMessage != null) {
+                        Surface(
+                            color = RejectedRedBg,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                        ) {
+                            Text(uploadErrorMessage!!, color = RejectedRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(10.dp))
+                        }
+                    }
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -456,7 +572,7 @@ fun ListPropertyWizardScreen(
 
             Spacer(modifier = Modifier.height(30.dp))
 
-            // Bottom Navigation Buttons (Back & Next / Submit)
+            // Navigation Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -464,6 +580,7 @@ fun ListPropertyWizardScreen(
                 if (currentStep > 1) {
                     OutlinedButton(
                         onClick = { currentStep-- },
+                        enabled = !isSubmitting,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp)
                     ) {
@@ -476,22 +593,93 @@ fun ListPropertyWizardScreen(
                         if (currentStep < 5) {
                             currentStep++
                         } else {
-                            val newProp = tempProp.copy(
-                                id = "prop_${System.currentTimeMillis()}",
-                                createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
-                            )
-                            onSubmitProperty(newProp)
+                            if (title.isBlank() || priceText.isBlank()) {
+                                uploadErrorMessage = "Please complete title and price fields before submitting."
+                                return@Button
+                            }
+
+                            isSubmitting = true
+                            uploadErrorMessage = null
+
+                            coroutineScope.launch {
+                                // Stage 1: Save Owned Draft Property in Firestore
+                                uploadStatusMessage = "Stage 1/3: Saving draft property in Firestore..."
+                                uploadProgress = 0.1f
+
+                                val draftResult = NestaRepository.savePropertyDraft(tempProp)
+                                if (draftResult.isFailure) {
+                                    val err = draftResult.exceptionOrNull()
+                                    uploadErrorMessage = "Stage 1 Failed (Draft Creation): ${err?.message ?: "Firestore write error."}"
+                                    isSubmitting = false
+                                    return@launch
+                                }
+
+                                val savedDraft = draftResult.getOrNull()!!
+                                val uploadedUrls = mutableListOf<String>()
+                                val uploadedPublicIds = mutableListOf<String>()
+
+                                // Stage 2: Upload Selected Photos via Cloudinary Worker
+                                if (selectedImageUris.isNotEmpty()) {
+                                    val totalCount = selectedImageUris.size
+                                    selectedImageUris.forEachIndexed { idx, uri ->
+                                        uploadStatusMessage = "Stage 2/3: Uploading photo ${idx + 1} of $totalCount to Cloudinary..."
+                                        val uploadRes = CloudinaryImageUploader.uploadImage(
+                                            context = context,
+                                            imageUri = uri,
+                                            propertyId = savedDraft.id,
+                                            onProgress = { prog ->
+                                                uploadProgress = 0.1f + (0.7f * ((idx + prog) / totalCount))
+                                            }
+                                        )
+
+                                        if (uploadRes.isFailure) {
+                                            val err = uploadRes.exceptionOrNull()
+                                            uploadErrorMessage = "Stage 2 Failed (Cloudinary Photo Upload on photo ${idx + 1}): ${err?.message ?: "Worker signing / upload failure."}"
+                                            isSubmitting = false
+                                            return@launch
+                                        }
+
+                                        val resData = uploadRes.getOrNull()!!
+                                        uploadedUrls.add(resData.secureUrl)
+                                        uploadedPublicIds.add(resData.publicId)
+                                    }
+                                }
+
+                                // Stage 3: Firestore Persistence & Moderation Submit
+                                uploadStatusMessage = "Stage 3/3: Submitting listing for admin moderation review..."
+                                uploadProgress = 0.95f
+
+                                val finalCover = uploadedUrls.getOrNull(coverImageIndex) ?: uploadedUrls.firstOrNull() ?: ""
+                                val finalProperty = savedDraft.copy(
+                                    images = uploadedUrls,
+                                    imagePublicIds = uploadedPublicIds,
+                                    coverImage = finalCover,
+                                    status = ListingStatus.PENDING,
+                                    verificationStatus = VerificationStatus.PENDING
+                                )
+
+                                NestaRepository.addProperty(finalProperty)
+                                uploadProgress = 1.0f
+                                uploadStatusMessage = "Listing successfully submitted for review!"
+                                isSubmitting = false
+                                onSubmitProperty(finalProperty)
+                            }
                         }
                     },
+                    enabled = !isSubmitting,
                     colors = ButtonDefaults.buttonColors(containerColor = DeepNavy),
                     modifier = Modifier.weight(1.5f),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text(
-                        text = if (currentStep == 5) "Submit for Admin Review" else "Next Step",
-                        color = WarmOffWhite,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (isSubmitting) {
+                        CircularProgressIndicator(color = WarmOffWhite, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text(
+                            text = if (currentStep == 5) "Submit for Admin Review" else "Next Step",
+                            color = WarmOffWhite,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 

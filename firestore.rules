@@ -35,8 +35,6 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAuthenticated();
       // Public signup can create only an unapproved seeker/agent profile.
-      // Initial administrators must be provisioned through the Firebase Console
-      // or a trusted Admin SDK process, which bypasses these client rules.
       allow create: if isOwner(userId) &&
         request.resource.data.uid == request.auth.uid &&
         request.resource.data.role in ['SEEKER', 'AGENT'] &&
@@ -54,6 +52,12 @@ service cloud.firestore {
         ])
       );
       allow delete: if isAdmin();
+
+      // Recipient-only User Notifications Subcollection
+      match /notifications/{notificationId} {
+        allow read, update, delete: if isOwner(userId) || isAdmin();
+        allow create: if isAuthenticated();
+      }
     }
 
     // Properties Collection

@@ -59,6 +59,8 @@ object NestaRepository {
     private val _messages = MutableStateFlow<Map<String, List<Message>>>(emptyMap())
     val messages: StateFlow<Map<String, List<Message>>> = _messages.asStateFlow()
 
+    private var activeNotificationsListener: ListenerRegistration? = null
+    private var activeConversationsListener: ListenerRegistration? = null
     private var activeMessagesListener: ListenerRegistration? = null
 
     // Reports Queue (Admin moderation)
@@ -92,6 +94,10 @@ object NestaRepository {
 
     // Clear user-specific state on logout or account switch
     fun clearUserData() {
+        activeNotificationsListener?.remove()
+        activeNotificationsListener = null
+        activeConversationsListener?.remove()
+        activeConversationsListener = null
         activeMessagesListener?.remove()
         activeMessagesListener = null
         _favoritePropertyIds.value = emptySet()
@@ -100,12 +106,77 @@ object NestaRepository {
         _viewingRequests.value = emptyList()
         _conversations.value = emptyList()
         _messages.value = emptyMap()
+        _notifications.value = emptyList()
         _propertyAlerts.value = emptyList()
     }
 
     fun resetForTesting(testProperties: List<Property> = emptyList()) {
         clearUserData()
         _properties.value = testProperties
+    }
+
+    // --- RECIPIENT NOTIFICATIONS ---
+    fun observeNotifications(userId: String) {
+        activeNotificationsListener?.remove()
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            activeNotificationsListener = firestore.collection("users")
+                .document(userId)
+                .collection("notifications")
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    val list = snapshot.documents.mapNotNull { doc ->
+                        NotificationItem(
+                            id = doc.id,
+                            userId = userId,
+                            title = doc.getString("title") ?: "",
+                            message = doc.getString("message") ?: "",
+                            type = doc.getString("type") ?: "SYSTEM",
+                            isRead = doc.getBoolean("isRead") ?: false,
+                            timestamp = doc.getString("timestamp") ?: ""
+                        )
+                    }
+                    _notifications.value = list
+                }
+        } catch (_: Exception) { }
+    }
+
+    suspend fun sendNotification(recipientId: String, title: String, message: String, type: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val notifId = "notif_${System.currentTimeMillis()}"
+            val currentTimeStr = SimpleDateFormat("HH:mm", Locale.US).format(Date())
+            val isoTime = getCurrentIsoTimestamp()
+            val notifMap = mapOf(
+                "id" to notifId,
+                "userId" to recipientId,
+                "title" to title,
+                "message" to message,
+                "type" to type,
+                "isRead" to false,
+                "timestamp" to currentTimeStr,
+                "createdAt" to isoTime
+            )
+            FirebaseFirestore.getInstance().collection("users")
+                .document(recipientId)
+                .collection("notifications")
+                .document(notifId)
+                .set(notifMap).await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Result.failure(Exception(e.message ?: "Failed to send notification.", e))
+        }
+    }
+
+    fun markNotificationAsRead(userId: String, notificationId: String) {
+        try {
+            FirebaseFirestore.getInstance().collection("users")
+                .document(userId)
+                .collection("notifications")
+                .document(notificationId)
+                .update("isRead", true)
+        } catch (_: Exception) { }
     }
 
     // --- FAVORITES & COMPARISON ---
@@ -146,7 +217,6 @@ object NestaRepository {
         current.add(0, propertyId)
         _recentlyViewedIds.value = current.take(10)
 
-        // Increment total views
         _properties.value = _properties.value.map {
             if (it.id == propertyId) {
                 it.copy(viewsCount = it.viewsCount + 1)
@@ -294,6 +364,79 @@ object NestaRepository {
         return minOf(100, score)
     }
 
+    suspend fun savePropertyDraft(draftProp: Property): Result<Property> = withContext(Dispatchers.IO) {
+        val user = currentUser.value ?: return@withContext Result.failure(SecurityException("Authentication required to save property draft."))
+
+        if (user.role != UserRole.AGENT && user.role != UserRole.ADMIN) {
+            return@withContext Result.failure(SecurityException("Only authorized Agent or Admin accounts can save property drafts."))
+        }
+
+        if (!user.isEmailVerified) {
+            return@withContext Result.failure(SecurityException("Your email address must be verified before you can save property drafts."))
+        }
+
+        if (user.role == UserRole.AGENT && !user.isAgentApproved) {
+            return@withContext Result.failure(SecurityException("Your agent account is currently pending administrator approval."))
+        }
+
+        val currentTime = getCurrentIsoTimestamp()
+        val draftId = draftProp.id.ifBlank { "prop_${System.currentTimeMillis()}" }
+
+        val sanitizedProperty = draftProp.copy(
+            id = draftId,
+            ownerId = user.id,
+            ownerName = user.name,
+            ownerPhone = user.phone,
+            ownerEmail = user.email,
+            ownerAgency = user.agencyName,
+            isOwnerVerified = user.isVerified,
+            status = ListingStatus.DRAFT,
+            verificationStatus = VerificationStatus.PENDING,
+            isFeatured = false,
+            createdAt = currentTime
+        )
+
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val propMap = mapOf(
+                "id" to sanitizedProperty.id,
+                "ownerId" to user.id,
+                "ownerName" to user.name,
+                "ownerPhone" to user.phone,
+                "ownerEmail" to user.email,
+                "ownerAgency" to user.agencyName,
+                "isOwnerVerified" to user.isVerified,
+                "title" to sanitizedProperty.title,
+                "description" to sanitizedProperty.description,
+                "propertyType" to sanitizedProperty.propertyType.name,
+                "listingType" to sanitizedProperty.listingType.name,
+                "price" to sanitizedProperty.price,
+                "billingPeriod" to sanitizedProperty.billingPeriod.name,
+                "bedrooms" to sanitizedProperty.bedrooms,
+                "bathrooms" to sanitizedProperty.bathrooms,
+                "sizeSqm" to sanitizedProperty.sizeSqm,
+                "parkingSpaces" to sanitizedProperty.parkingSpaces,
+                "status" to ListingStatus.DRAFT.name,
+                "verificationStatus" to VerificationStatus.PENDING.name,
+                "images" to sanitizedProperty.images,
+                "imagePublicIds" to sanitizedProperty.imagePublicIds,
+                "coverImage" to sanitizedProperty.coverImage,
+                "createdAt" to currentTime
+            )
+            firestore.collection("properties").document(draftId).set(propMap).await()
+
+            val list = _properties.value.toMutableList()
+            list.removeAll { it.id == draftId }
+            list.add(0, sanitizedProperty)
+            _properties.value = list
+
+            Result.success(sanitizedProperty)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Result.failure(Exception(e.message ?: "Failed to save draft property in database.", e))
+        }
+    }
+
     fun addProperty(draftProp: Property) {
         val user = currentUser.value ?: throw SecurityException("Authentication required to submit property listings.")
 
@@ -312,7 +455,7 @@ object NestaRepository {
         val currentTime = getCurrentIsoTimestamp()
 
         val sanitizedProperty = draftProp.copy(
-            id = "prop_${System.currentTimeMillis()}",
+            id = draftProp.id.ifBlank { "prop_${System.currentTimeMillis()}" },
             ownerId = user.id,
             ownerName = user.name,
             ownerPhone = user.phone,
@@ -322,28 +465,43 @@ object NestaRepository {
             status = ListingStatus.PENDING,
             verificationStatus = VerificationStatus.PENDING,
             isFeatured = false,
-            viewsCount = 0,
-            uniqueViews = 0,
-            savesCount = 0,
-            sharesCount = 0,
-            inquiriesCount = 0,
             createdAt = currentTime
         )
 
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val propMap = mapOf(
+                "id" to sanitizedProperty.id,
+                "ownerId" to user.id,
+                "ownerName" to user.name,
+                "ownerPhone" to user.phone,
+                "ownerEmail" to user.email,
+                "ownerAgency" to user.agencyName,
+                "isOwnerVerified" to user.isVerified,
+                "title" to sanitizedProperty.title,
+                "description" to sanitizedProperty.description,
+                "propertyType" to sanitizedProperty.propertyType.name,
+                "listingType" to sanitizedProperty.listingType.name,
+                "price" to sanitizedProperty.price,
+                "billingPeriod" to sanitizedProperty.billingPeriod.name,
+                "bedrooms" to sanitizedProperty.bedrooms,
+                "bathrooms" to sanitizedProperty.bathrooms,
+                "sizeSqm" to sanitizedProperty.sizeSqm,
+                "parkingSpaces" to sanitizedProperty.parkingSpaces,
+                "status" to ListingStatus.PENDING.name,
+                "verificationStatus" to VerificationStatus.PENDING.name,
+                "images" to sanitizedProperty.images,
+                "imagePublicIds" to sanitizedProperty.imagePublicIds,
+                "coverImage" to sanitizedProperty.coverImage,
+                "createdAt" to currentTime
+            )
+            firestore.collection("properties").document(sanitizedProperty.id).set(propMap)
+        } catch (_: Exception) { }
+
         val list = _properties.value.toMutableList()
+        list.removeAll { it.id == sanitizedProperty.id }
         list.add(0, sanitizedProperty)
         _properties.value = list
-
-        val notifs = _notifications.value.toMutableList()
-        notifs.add(0, NotificationItem(
-            id = "n_${System.currentTimeMillis()}",
-            userId = "admin_moderators",
-            title = "New Agent Listing Submitted",
-            message = "Agent ${user.name} submitted '${sanitizedProperty.title}' for review.",
-            type = "MODERATION",
-            timestamp = currentTime
-        ))
-        _notifications.value = notifs
     }
 
     fun updatePropertyStatus(propertyId: String, status: ListingStatus) {
@@ -358,16 +516,16 @@ object NestaRepository {
         }
     }
 
-    // --- ADMIN MODERATION ACTIONS ---
-    suspend fun fetchPendingAgents() = withContext(Dispatchers.IO) {
-        val user = currentUser.value ?: return@withContext
-        if (user.role != UserRole.ADMIN) return@withContext
+    // --- ADMIN AGENT DIRECTORY & MODERATION ACTIONS ---
+    suspend fun fetchAgentsByStatus(status: AgentApprovalStatus): Result<List<User>> = withContext(Dispatchers.IO) {
+        val user = currentUser.value ?: return@withContext Result.failure(SecurityException("Admin authentication required."))
+        if (user.role != UserRole.ADMIN) return@withContext Result.failure(SecurityException("Admin authorization required."))
 
         try {
             val firestore = FirebaseFirestore.getInstance()
             val querySnapshot = firestore.collection("users")
                 .whereEqualTo("role", UserRole.AGENT.name)
-                .whereEqualTo("approvalStatus", AgentApprovalStatus.PENDING.name)
+                .whereEqualTo("approvalStatus", status.name)
                 .get().await()
 
             val list = querySnapshot.documents.mapNotNull { doc ->
@@ -378,6 +536,9 @@ object NestaRepository {
                 val agencyName = doc.getString("agencyName") ?: ""
                 val isEmailVerified = doc.getBoolean("isEmailVerified") ?: false
                 val memberSince = doc.getString("memberSince") ?: ""
+                val reviewedBy = doc.getString("reviewedBy") ?: ""
+                val reviewedAt = doc.getString("reviewedAt") ?: ""
+                val rejectionReason = doc.getString("rejectionReason") ?: ""
 
                 User(
                     id = uid,
@@ -386,49 +547,30 @@ object NestaRepository {
                     phone = phone,
                     role = UserRole.AGENT,
                     isEmailVerified = isEmailVerified,
-                    approvalStatus = AgentApprovalStatus.PENDING,
+                    approvalStatus = status,
+                    reviewedBy = reviewedBy,
+                    reviewedAt = reviewedAt,
+                    rejectionReason = rejectionReason,
                     agencyName = agencyName,
                     memberSince = memberSince
                 )
             }
-            _pendingAgents.value = list
+            Result.success(list)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
+            Result.failure(Exception(e.message ?: "Failed to fetch agents by status.", e))
         }
     }
 
-    suspend fun approveAgent(agentUserId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun updateAgentApprovalStatus(agentUserId: String, status: AgentApprovalStatus, reason: String = ""): Result<Unit> = withContext(Dispatchers.IO) {
         val user = currentUser.value ?: return@withContext Result.failure(SecurityException("Admin authentication required."))
         if (user.role != UserRole.ADMIN) return@withContext Result.failure(SecurityException("Admin authorization required."))
 
         try {
+            val isApproved = status == AgentApprovalStatus.APPROVED
             val updateData = mapOf(
-                "approvalStatus" to AgentApprovalStatus.APPROVED.name,
-                "isAgentApproved" to true,
-                "reviewedBy" to user.id,
-                "reviewedAt" to getCurrentIsoTimestamp(),
-                "rejectionReason" to ""
-            )
-            FirebaseFirestore.getInstance()
-                .collection("users").document(agentUserId)
-                .update(updateData).await()
-
-            _pendingAgents.value = _pendingAgents.value.filter { it.id != agentUserId }
-            Result.success(Unit)
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            Result.failure(Exception(e.message ?: "Failed to approve agent application.", e))
-        }
-    }
-
-    suspend fun rejectAgent(agentUserId: String, reason: String): Result<Unit> = withContext(Dispatchers.IO) {
-        val user = currentUser.value ?: return@withContext Result.failure(SecurityException("Admin authentication required."))
-        if (user.role != UserRole.ADMIN) return@withContext Result.failure(SecurityException("Admin authorization required."))
-
-        try {
-            val updateData = mapOf(
-                "approvalStatus" to AgentApprovalStatus.REJECTED.name,
-                "isAgentApproved" to false,
+                "approvalStatus" to status.name,
+                "isAgentApproved" to isApproved,
                 "reviewedBy" to user.id,
                 "reviewedAt" to getCurrentIsoTimestamp(),
                 "rejectionReason" to reason
@@ -437,12 +579,35 @@ object NestaRepository {
                 .collection("users").document(agentUserId)
                 .update(updateData).await()
 
-            _pendingAgents.value = _pendingAgents.value.filter { it.id != agentUserId }
+            val notifTitle = when (status) {
+                AgentApprovalStatus.APPROVED -> "Agent Application Approved"
+                AgentApprovalStatus.REJECTED -> "Agent Application Rejected"
+                AgentApprovalStatus.SUSPENDED -> "Agent Account Suspended"
+                AgentApprovalStatus.PENDING -> "Agent Application Under Review"
+            }
+
+            val notifMsg = when (status) {
+                AgentApprovalStatus.APPROVED -> "Congratulations! Your agent account has been approved by an administrator."
+                AgentApprovalStatus.REJECTED -> "Your agent application was rejected. Reason: ${reason.ifBlank { "Does not meet requirements." }}"
+                AgentApprovalStatus.SUSPENDED -> "Your agent account has been suspended. Reason: ${reason.ifBlank { "Policy violation." }}"
+                AgentApprovalStatus.PENDING -> "Your application status has been set to Pending Review."
+            }
+
+            sendNotification(agentUserId, notifTitle, notifMsg, status.name)
+
             Result.success(Unit)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            Result.failure(Exception(e.message ?: "Failed to reject agent application.", e))
+            Result.failure(Exception(e.message ?: "Failed to update agent status.", e))
         }
+    }
+
+    suspend fun approveAgent(agentUserId: String): Result<Unit> {
+        return updateAgentApprovalStatus(agentUserId, AgentApprovalStatus.APPROVED)
+    }
+
+    suspend fun rejectAgent(agentUserId: String, reason: String): Result<Unit> {
+        return updateAgentApprovalStatus(agentUserId, AgentApprovalStatus.REJECTED, reason)
     }
 
     fun approveProperty(propertyId: String) {
@@ -485,6 +650,35 @@ object NestaRepository {
     }
 
     // --- MESSAGING & VIEWING REQUESTS ---
+    fun observeConversations(currentUserId: String) {
+        activeConversationsListener?.remove()
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            activeConversationsListener = firestore.collection("conversations")
+                .whereArrayContains("participants", currentUserId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    val list = snapshot.documents.mapNotNull { docSnapshot ->
+                        Conversation(
+                            id = docSnapshot.id,
+                            propertyId = docSnapshot.getString("propertyId") ?: "",
+                            propertyTitle = docSnapshot.getString("propertyTitle") ?: "",
+                            propertyPrice = docSnapshot.getString("propertyPrice") ?: "",
+                            propertyImage = docSnapshot.getString("propertyImage") ?: "",
+                            seekerId = docSnapshot.getString("seekerId") ?: "",
+                            seekerName = docSnapshot.getString("seekerName") ?: "",
+                            agentId = docSnapshot.getString("agentId") ?: "",
+                            agentName = docSnapshot.getString("agentName") ?: "",
+                            lastMessage = docSnapshot.getString("lastMessage") ?: "",
+                            lastTimestamp = docSnapshot.getString("lastTimestamp") ?: "",
+                            participants = (docSnapshot.get("participants") as? List<*>)?.mapNotNull { it.toString() } ?: emptyList()
+                        )
+                    }
+                    _conversations.value = list
+                }
+        } catch (_: Exception) { }
+    }
+
     suspend fun getOrCreateConversation(property: Property): Result<Conversation> = withContext(Dispatchers.IO) {
         val seeker = currentUser.value ?: return@withContext Result.failure(SecurityException("Authentication required to message agents."))
 
@@ -506,6 +700,7 @@ object NestaRepository {
                     propertyPrice = docSnapshot.getString("propertyPrice") ?: "KSh ${formatPrice(property.price)}",
                     propertyImage = docSnapshot.getString("propertyImage") ?: property.coverImage,
                     seekerId = docSnapshot.getString("seekerId") ?: seeker.id,
+                    seekerName = docSnapshot.getString("seekerName") ?: seeker.name,
                     agentId = docSnapshot.getString("agentId") ?: property.ownerId,
                     agentName = docSnapshot.getString("agentName") ?: property.ownerName,
                     lastMessage = docSnapshot.getString("lastMessage") ?: "",
@@ -521,6 +716,7 @@ object NestaRepository {
                     propertyPrice = "KSh ${formatPrice(property.price)}",
                     propertyImage = property.coverImage,
                     seekerId = seeker.id,
+                    seekerName = seeker.name,
                     agentId = property.ownerId,
                     agentName = property.ownerName,
                     lastMessage = "Inquiry regarding ${property.title}",
@@ -535,6 +731,7 @@ object NestaRepository {
                     "propertyPrice" to "KSh ${formatPrice(property.price)}",
                     "propertyImage" to property.coverImage,
                     "seekerId" to seeker.id,
+                    "seekerName" to seeker.name,
                     "agentId" to property.ownerId,
                     "agentName" to property.ownerName,
                     "lastMessage" to newConv.lastMessage,
@@ -551,6 +748,9 @@ object NestaRepository {
                 currentList.add(0, conv)
                 _conversations.value = currentList
             }
+
+            // Also attach conversation list listener for live delivery
+            observeConversations(seeker.id)
 
             Result.success(conv)
         } catch (e: Exception) {
@@ -619,14 +819,12 @@ object NestaRepository {
                 "createdAt" to isoTime
             )
 
-            // Write message to Firestore subcollection
             firestore.collection("conversations")
                 .document(conversationId)
                 .collection("messages")
                 .document(msgId)
                 .set(msgMap).await()
 
-            // Update parent conversation summary
             firestore.collection("conversations")
                 .document(conversationId)
                 .update(mapOf(
