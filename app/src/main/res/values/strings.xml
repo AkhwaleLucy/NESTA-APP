@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">NESTA - Real Estate Nairobi</string>
+    <string name="brand_name">NESTA</string>
+    <string name="brand_tagline">Find a place that feels like home.</string>
+    <string name="hero_subtitle">Discover homes, apartments, land and commercial properties across Nairobi.</string>
+    <string name="default_location">Nairobi, Kenya</string>
+</resources>

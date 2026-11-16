@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserData().role == 'ADMIN';
+    }
+
+    // Uses trusted Firebase Auth ID Token claim for email verification
+    function isEmailVerified() {
+      return isAuthenticated() && request.auth.token.email_verified == true;
+    }
+
+    function isApprovedAgent() {
+      return isAuthenticated() &&
+             isEmailVerified() &&
+             getUserData().role == 'AGENT' &&
+             getUserData().approvalStatus == 'APPROVED';
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      // Non-admins cannot modify role, approvalStatus, isAgentApproved, or moderation audit fields
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'role', 'isAgentApproved', 'approvalStatus', 'reviewedBy', 'reviewedAt', 'rejectionReason'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Properties Collection
+    match /properties/{propertyId} {
+      // Public browsing allowed only for VERIFIED & AVAILABLE properties
+      allow read: if resource.data.status == 'AVAILABLE' && resource.data.verificationStatus == 'VERIFIED'
+                  || isAuthenticated() && (request.auth.uid == resource.data.ownerId || isAdmin());
+
+      // New agent listings MUST start as DRAFT or PENDING review and cannot grant featured status
+      allow create: if isAdmin() || (
+        isApprovedAgent() &&
+        request.resource.data.ownerId == request.auth.uid &&
+        (request.resource.data.status == 'DRAFT' || request.resource.data.status == 'PENDING') &&
+        request.resource.data.verificationStatus == 'PENDING' &&
+        (!('isFeatured' in request.resource.data) || request.resource.data.isFeatured == false)
+      );
+
+      // Agents cannot edit another agent's property, change ownerId, bypass suspension, or grant verification/featured status
+      allow update: if isAdmin() || (
+        isApprovedAgent() &&
+        request.auth.uid == resource.data.ownerId &&
+        resource.data.status != 'SUSPENDED' &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'ownerId', 'verificationStatus', 'isFeatured', 'rejectionReason'
+        ])
+      );
+
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == resource.data.ownerId);
+    }
+  }
+}

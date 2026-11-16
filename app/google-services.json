@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "756476169495",
+    "project_id": "nesta-8f512",
+    "storage_bucket": "nesta-8f512.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:756476169495:android:610c2e1fb866c83b837b52",
+        "android_client_info": {
+          "package_name": "com.example.myapplication"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDK8A1yg2RChfvAYR_wPMAlXvA-SKH9pKM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

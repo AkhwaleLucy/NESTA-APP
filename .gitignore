@@ -1,0 +1,39 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/DALVIK VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+/build
+/app/build
+/.gradle
+/.idea
+/.kotlin
+*.iml
+.DS_Store
+
+# Local configuration & environment files
+local.properties
+.env
+.env.*
+.dev.vars
+service-account*.json
+*.log
+
+# Backend & Node dependencies
+node_modules/
+.wrangler/
+
+# Signing keys & keystores
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
