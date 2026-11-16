@@ -101,6 +101,7 @@ To deploy the backend upload signing script in `backend/sign-upload.js`:
 ```bash
 cd backend
 npx wrangler login
+npx wrangler secret put FIREBASE_API_KEY
 npx wrangler secret put CLOUDINARY_API_SECRET
 npx wrangler deploy
 ```
