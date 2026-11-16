@@ -44,7 +44,7 @@
 - **Cloud Firestore Database**: Persistent storage for `/users`, `/properties`, `/viewing_requests`, `/conversations`, `/messages`, `/reports`, `/notifications`, and `/property_alerts`.
 - **Backend Security Rules (`firestore.rules`)**:
   - Non-administrators cannot modify `role`, `isAgentApproved`, or `approvalStatus`.
-  - New agent listings are forced to `status = PENDING` and `verificationStatus = PENDING`.
+  - New agent listings begin as owned `DRAFT` documents with `verificationStatus = PENDING`; completed submissions transition to `PENDING` for administrator review.
   - Unapproved agents and unverified emails cannot create listing documents.
 - **Cloudflare Worker Backend Signing (`backend/sign-upload.js`)**:
   - Authorizes Cloudinary image uploads using Firebase Auth ID token verification and Firestore agent approval checks.
@@ -112,7 +112,8 @@ npx wrangler deploy
 - **Android App Compilation**: Passed (`assembleDebug` builds cleanly with 0 errors).
 - **Firestore Security Rules**: Deployed and live on Firebase project `nesta-8f512`.
 - **Local Unit Tests**: Passed (`NestaRepositoryTest.kt` verifies role routing, seeker bounds, pending agent restrictions, and admin approvals).
-- **Live Cloudflare Worker Deployment**: Requires user execution of `npx wrangler deploy` with Cloudinary account credentials.
+- **Live Cloudflare Worker Deployment**: Deployed successfully at https://nesta-cloudinary-signer.lucky-nesta-uploads.workers.dev (deployment confirmed on 15 November 2026).
+- **Live Photo-Upload Flow**: Unverified. A complete Android-to-Worker-to-Cloudinary upload, Firestore persistence, and image display after restarting the app still require a successful runtime test.
 
 ---
 
