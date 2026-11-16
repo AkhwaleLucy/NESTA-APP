@@ -34,12 +34,23 @@ service cloud.firestore {
     // Users Collection
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isOwner(userId);
+      // Public signup can create only an unapproved seeker/agent profile.
+      // Initial administrators must be provisioned through the Firebase Console
+      // or a trusted Admin SDK process, which bypasses these client rules.
+      allow create: if isOwner(userId) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.role in ['SEEKER', 'AGENT'] &&
+        request.resource.data.approvalStatus == 'PENDING' &&
+        request.resource.data.isAgentApproved == false &&
+        request.resource.data.get('isVerified', false) == false &&
+        request.resource.data.get('reviewedBy', '') == '' &&
+        request.resource.data.get('reviewedAt', '') == '' &&
+        request.resource.data.get('rejectionReason', '') == '';
       // Non-admins cannot modify role, approvalStatus, isAgentApproved, or moderation audit fields
       allow update: if isAdmin() || (
         isOwner(userId) &&
         !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'role', 'isAgentApproved', 'approvalStatus', 'reviewedBy', 'reviewedAt', 'rejectionReason'
+          'uid', 'role', 'isVerified', 'isAgentApproved', 'approvalStatus', 'reviewedBy', 'reviewedAt', 'rejectionReason'
         ])
       );
       allow delete: if isAdmin();
