@@ -51,7 +51,29 @@ object AuthRepository : AuthProvider {
     private val repositoryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val isInitialized = AtomicBoolean(false)
 
+    private fun attachProfileListener(user: User) {
+        val provider = activeProvider
+        if (provider is FirebaseAuthService) {
+            provider.startUserProfileListener(
+                uid = user.id,
+                fallbackEmail = user.email,
+                onUserUpdated = { updatedUser ->
+                    _currentUser.value = updatedUser
+                    if (updatedUser.isEmailVerified) {
+                        _authState.value = AuthenticationState.Authenticated(updatedUser)
+                    } else {
+                        _authState.value = AuthenticationState.EmailVerificationPending(updatedUser)
+                    }
+                },
+                onError = { err ->
+                    _authState.value = AuthenticationState.Error(err)
+                }
+            )
+        }
+    }
+
     fun setProvider(provider: AuthProvider?) {
+        (activeProvider as? FirebaseAuthService)?.stopUserProfileListener()
         activeProvider = provider
         _currentUser.value = null
         _authState.value = AuthenticationState.Unauthenticated
@@ -75,6 +97,7 @@ object AuthRepository : AuthProvider {
                 val restoredUser = provider.restoreSession()
                 if (restoredUser != null) {
                     _currentUser.value = restoredUser
+                    attachProfileListener(restoredUser)
                     if (restoredUser.isEmailVerified) {
                         _authState.value = AuthenticationState.Authenticated(restoredUser)
                     } else {
@@ -117,12 +140,12 @@ object AuthRepository : AuthProvider {
             val result = provider.login(cleanEmail, passwordInput)
             result.fold(
                 onSuccess = { user ->
+                    _currentUser.value = user
+                    attachProfileListener(user)
                     if (!user.isEmailVerified) {
-                        _currentUser.value = user
                         _authState.value = AuthenticationState.EmailVerificationPending(user)
                         Result.failure(Exception("Your email address is not verified yet. Please check your inbox or click 'Resend Email'."))
                     } else {
-                        _currentUser.value = user
                         _authState.value = AuthenticationState.Authenticated(user)
                         Result.success(user)
                     }
@@ -174,6 +197,7 @@ object AuthRepository : AuthProvider {
             result.fold(
                 onSuccess = { user ->
                     _currentUser.value = user
+                    attachProfileListener(user)
                     _authState.value = AuthenticationState.EmailVerificationPending(user)
                     Result.success(user)
                 },
@@ -190,6 +214,7 @@ object AuthRepository : AuthProvider {
 
     override suspend fun logout(): Unit = withContext(Dispatchers.IO) {
         try {
+            (activeProvider as? FirebaseAuthService)?.stopUserProfileListener()
             activeProvider?.logout()
         } catch (e: Exception) {
             if (e is CancellationException) throw e

@@ -13,6 +13,7 @@
 # Generated files
 /build
 /app/build
+/app/release
 /.gradle
 /.idea
 /.kotlin

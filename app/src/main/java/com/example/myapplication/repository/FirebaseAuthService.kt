@@ -10,6 +10,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
@@ -24,6 +25,7 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
         private const val TAG = "NESTA_AUTH"
     }
 
+    private var profileListenerRegistration: ListenerRegistration? = null
     private val emailPattern = Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 
     fun isValidEmailFormat(email: String): Boolean {
@@ -43,6 +45,82 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
         return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
     }
 
+    fun stopUserProfileListener() {
+        profileListenerRegistration?.remove()
+        profileListenerRegistration = null
+    }
+
+    fun startUserProfileListener(
+        uid: String,
+        fallbackEmail: String,
+        onUserUpdated: (User) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        stopUserProfileListener()
+        if (!isFirebaseConfigured()) return
+
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val docRef = firestore.collection("users").document(uid)
+            val auth = FirebaseAuth.getInstance()
+
+            profileListenerRegistration = docRef.addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e(TAG, "Profile snapshot listener error: ${error.message}")
+                    onError("Failed to observe user profile: ${error.message}")
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null && snapshot.exists()) {
+                    val firebaseUser = auth.currentUser
+                    val isEmailVerified = firebaseUser?.isEmailVerified ?: false
+
+                    val roleStr = snapshot.getString("role") ?: UserRole.SEEKER.name
+                    val role = try { UserRole.valueOf(roleStr) } catch (_: Exception) { UserRole.SEEKER }
+
+                    val isApprovedBool = snapshot.getBoolean("isAgentApproved") == true
+                    val approvalStatusStr = snapshot.getString("approvalStatus")
+                        ?: if (isApprovedBool) AgentApprovalStatus.APPROVED.name else AgentApprovalStatus.PENDING.name
+                    val approvalStatus = try {
+                        AgentApprovalStatus.valueOf(approvalStatusStr)
+                    } catch (_: Exception) {
+                        if (isApprovedBool) AgentApprovalStatus.APPROVED else AgentApprovalStatus.PENDING
+                    }
+
+                    val reviewedBy = snapshot.getString("reviewedBy") ?: ""
+                    val reviewedAt = snapshot.getString("reviewedAt") ?: ""
+                    val rejectionReason = snapshot.getString("rejectionReason") ?: ""
+
+                    val name = snapshot.getString("name") ?: fallbackEmail.substringBefore("@")
+                    val email = snapshot.getString("email") ?: fallbackEmail
+                    val phone = snapshot.getString("phone") ?: ""
+                    val agencyName = snapshot.getString("agencyName") ?: ""
+                    val memberSince = snapshot.getString("memberSince") ?: getCurrentIsoTimestamp()
+
+                    val updatedUser = User(
+                        id = uid,
+                        name = name,
+                        email = email,
+                        phone = phone,
+                        role = role,
+                        isEmailVerified = isEmailVerified,
+                        approvalStatus = approvalStatus,
+                        reviewedBy = reviewedBy,
+                        reviewedAt = reviewedAt,
+                        rejectionReason = rejectionReason,
+                        agencyName = agencyName,
+                        memberSince = memberSince
+                    )
+
+                    onUserUpdated(updatedUser)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            onError("Failed to initialize user profile listener: ${e.message}")
+        }
+    }
+
     override suspend fun login(emailInput: String, passwordInput: String): Result<User> {
         val cleanEmail = emailInput.trim()
 
@@ -60,7 +138,7 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
 
         val auth = FirebaseAuth.getInstance()
 
-        // Stage 1: Firebase Authentication (Isolated credentials check)
+        // Stage 1: Firebase Authentication
         Log.d(TAG, "Stage 1: Attempting signInWithEmailAndPassword for $cleanEmail")
         val authResult = try {
             auth.signInWithEmailAndPassword(cleanEmail, passwordInput).await()
@@ -90,7 +168,6 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
 
         val firebaseUser = authResult.user ?: return Result.failure(Exception("Authentication succeeded, but user identity is unavailable."))
 
-        // Stage 2: Reload User to refresh verification status
         try {
             firebaseUser.reload().await()
         } catch (reloadErr: Exception) {
@@ -98,14 +175,12 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
             Log.w(TAG, "FirebaseUser reload warning: ${reloadErr.message}")
         }
 
-        // Stage 3: Load Firestore Profile (Isolated from Auth failures)
-        Log.d(TAG, "Stage 3: Loading user profile for ${firebaseUser.uid}")
+        Log.d(TAG, "Stage 2: Loading user profile for ${firebaseUser.uid}")
         val user = try {
             loadUserFromFirestore(firebaseUser.uid, firebaseUser.email ?: cleanEmail, firebaseUser.isEmailVerified)
         } catch (profileErr: Exception) {
             if (profileErr is CancellationException) throw profileErr
             Log.e(TAG, "Profile loading warning post-authentication: ${profileErr.message}")
-            // Recoverable profile fallback: do NOT misreport as credential failure
             User(
                 id = firebaseUser.uid,
                 name = firebaseUser.email?.substringBefore("@") ?: cleanEmail.substringBefore("@"),
@@ -151,7 +226,6 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
         val sanitizedRole = if (requestedRole == UserRole.ADMIN) UserRole.SEEKER else requestedRole
         val auth = FirebaseAuth.getInstance()
 
-        // Stage 1: Account Creation
         Log.d(TAG, "Stage 1: Creating Firebase Auth user for $cleanEmail")
         val uid: String
         try {
@@ -185,7 +259,6 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
             return Result.failure(Exception(userFriendlyMessage, e))
         }
 
-        // Stage 2: Verification Email Dispatch (Non-blocking timeout)
         Log.d(TAG, "Stage 2: Dispatching verification email to $cleanEmail")
         val firebaseUser = auth.currentUser
         if (firebaseUser != null) {
@@ -199,7 +272,6 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
             }
         }
 
-        // Stage 3: User Profile Persistence
         Log.d(TAG, "Stage 3: Persisting Firestore user document for $uid")
         val timestamp = getCurrentIsoTimestamp()
         val userMap = mapOf(
@@ -227,7 +299,6 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
             Log.w(TAG, "Stage 3 profile persistence warning: ${e.message}")
         }
 
-        Log.d(TAG, "Stage 4: Registration pipeline completed for $uid")
         val user = User(
             id = uid,
             name = cleanName,
@@ -247,6 +318,7 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
     }
 
     override suspend fun logout() {
+        stopUserProfileListener()
         if (isFirebaseConfigured()) {
             try {
                 FirebaseAuth.getInstance().signOut()
@@ -341,7 +413,6 @@ class FirebaseAuthService(private val context: Context) : AuthProvider {
             val isVerified = firebaseUser.isEmailVerified
             if (isVerified) {
                 try {
-                    // Force refresh of Firebase ID Token so request.auth.token.email_verified is updated for backend rules
                     firebaseUser.getIdToken(true).await()
                     FirebaseFirestore.getInstance().collection("users").document(firebaseUser.uid)
                         .update("isEmailVerified", true).await()
