@@ -1,4 +1,4 @@
-# NESTA - Real-Estate Property Discovery & Listing Platform 🏠🇰🇪
+# NESTA - Real-Estate Property Discovery & Listing Platform
 
 > *"Find a place that feels like home."*
 
@@ -11,34 +11,34 @@
 
 ---
 
-## 📌 Project Overview
+## Project Overview
 
 **NESTA** is a native Android real-estate marketplace platform tailored for **Nairobi, Kenya**, designed with clean architecture and Material 3 design to deliver a visual, fast, and trustworthy property discovery experience for **Property Seekers**, **Property Owners & Agents**, and **Platform Administrators**.
 
 ---
 
-## ✨ Key Features & Roles
+## Key Features & Roles
 
-### 🔍 1. Property Seekers
+### 1. Property Seekers
 - **Smart Natural Language Search**: Query properties using natural language (e.g. *"2 bedroom apartment in Kilimani under 80k"*).
 - **Interactive Nairobi Map Canvas**: View available listings as price pins (`KSh 75k`, `KSh 32M`) with callout preview cards.
 - **Filter Bottom Sheet**: Filter by Listing Type (Rent/Sale), Property Type, Price Range, Bedrooms, Bathrooms, and 17+ Amenities.
 - **Side-by-Side Property Comparison**: Compare up to 4 selected listings in a comparative matrix.
 - **Saved Wishlist & Inquiries**: Save favorites, schedule viewing appointments, and send in-app messages to listing owners.
 
-### 🏢 2. Property Owners & Agents
+### 2. Property Owners & Agents
 - **Agent Application & Admin Approval**: Agent accounts require both verified email and administrator approval (`approvalStatus == APPROVED`) before property creation.
 - **Listing Creation Wizard**: 5-step wizard with image selection, amenity picker, and live Listing Quality Score Meter.
 - **Agent Portal Dashboard**: Track active listings, total views, saves, and viewing inquiry appointments.
 
-### 🛡️ 3. Platform Administrators
+### 3. Platform Administrators
 - **Moderation Console**: 3 moderation queues for **Property Listings**, **Agent Approvals**, and **Flagged Reports**.
 - **Agent Approvals Queue**: Review applicant profile details and approve or reject agent applications with audit logging (`reviewedBy`, `reviewedAt`, `rejectionReason`).
 - **Property Review Queue**: Approve (`VERIFIED`/`AVAILABLE`), reject with reason, or suspend listings.
 
 ---
 
-## 🔐 Security & Backend Architecture
+## Security & Backend Architecture
 
 - **Firebase Authentication**: Email & password authentication with email verification link dispatch.
 - **Cloud Firestore Database**: Persistent storage for `/users`, `/properties`, `/viewing_requests`, `/conversations`, `/messages`, `/reports`, `/notifications`, and `/property_alerts`.
@@ -52,7 +52,7 @@
 
 ---
 
-## 🎨 High-Contrast Design System & Visual Palette
+## High-Contrast Design System & Visual Palette
 
 | Token | Hex Code | Role | Contrast Ratio |
 | :--- | :--- | :--- | :---: |
@@ -67,7 +67,7 @@
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 - **Language**: Kotlin 2.2.10
 - **UI Framework**: Jetpack Compose with Material 3
@@ -78,7 +78,7 @@
 
 ---
 
-## 🚀 Getting Started & Setup
+## Getting Started & Setup
 
 ### 1. Android App Setup
 1. Clone the repository:
@@ -107,7 +107,7 @@ npx wrangler deploy
 
 ---
 
-## 🧪 Current Verification Status
+## Current Verification Status
 
 - **Android App Compilation**: Passed (`assembleDebug` builds cleanly with 0 errors).
 - **Firestore Security Rules**: Deployed and live on Firebase project `nesta-8f512`.
@@ -117,6 +117,6 @@ npx wrangler deploy
 
 ---
 
-## 📜 License
+## License
 
 Distributed under the **MIT License**.
