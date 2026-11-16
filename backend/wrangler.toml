@@ -4,6 +4,6 @@ compatibility_date = "2025-01-01"
 
 [vars]
 FIREBASE_PROJECT_ID = "nesta-8f512"
-FIREBASE_API_KEY = "AIzaSyDK8A1yg2RChfvAYR_wPMAlXvA-SKH9pKM"
+# Set FIREBASE_API_KEY using: npx wrangler secret put FIREBASE_API_KEY
 CLOUDINARY_CLOUD_NAME = "your-cloudinary-cloud-name"
 CLOUDINARY_API_KEY = "your-cloudinary-api-key"
